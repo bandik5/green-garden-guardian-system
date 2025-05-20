@@ -1,164 +1,123 @@
 
 import { useState, useEffect } from 'react';
-import { Greenhouse, GreenhouseState } from '@/types';
-import { generateMockGreenhouseData } from '@/data/mockData';
+import { Greenhouse } from '@/types';
+import { toast } from '@/components/ui/use-toast';
 
-// In a real implementation, this would connect to Firebase
-export const useGreenhouseData = () => {
-  const [state, setState] = useState<GreenhouseState>({
-    greenhouses: {},
-    loading: true,
-    error: null
-  });
+// Import mock data (this would be replaced with Firebase in production)
+import { mockGreenhouseData } from '@/data/mockData';
 
+export function useGreenhouseData() {
+  const [greenhouses, setGreenhouses] = useState<Record<number, Greenhouse>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Load initial data
   useEffect(() => {
-    // Simulate API/Firebase fetch
-    const fetchData = async () => {
-      try {
-        // In real implementation, this would be a Firebase call
-        const data = generateMockGreenhouseData();
-        
-        setState({
-          greenhouses: data,
-          loading: false,
-          error: null
-        });
-        
-        // Set up real-time updates
-        const interval = setInterval(() => {
-          setState(prevState => {
-            const updatedGreenhouses = { ...prevState.greenhouses };
-            
-            // Update each greenhouse with new sensor data
-            Object.keys(updatedGreenhouses).forEach(key => {
-              const id = Number(key);
-              const greenhouse = updatedGreenhouses[id];
-              const baseTemp = greenhouse.currentData.temperature;
-              
-              // Simulate small changes in temperature
-              updatedGreenhouses[id] = {
-                ...greenhouse,
-                currentData: {
-                  temperature: +(baseTemp + (Math.random() * 0.2 - 0.1)).toFixed(1),
-                  humidity: +(greenhouse.currentData.humidity + (Math.random() * 1 - 0.5)).toFixed(1),
-                  pressure: greenhouse.currentData.pressure,
-                  timestamp: Date.now()
-                }
-              };
-              
-              // Update vent status based on temperature and mode
-              if (greenhouse.settings.mode === 'auto') {
-                const threshold = greenhouse.settings.temperatureThreshold;
-                const hysteresis = greenhouse.settings.hysteresis;
-                
-                if (updatedGreenhouses[id].currentData.temperature > threshold && 
-                    greenhouse.settings.ventStatus === 'closed') {
-                  updatedGreenhouses[id].settings.ventStatus = 'opening';
-                  // Simulate the delay for opening - in real app this would be handled by the ESP
-                  setTimeout(() => {
-                    setState(prevState => {
-                      const updated = { ...prevState };
-                      if (updated.greenhouses[id]) {
-                        updated.greenhouses[id].settings.ventStatus = 'open';
-                      }
-                      return updated;
-                    });
-                  }, 5000);
-                } else if (updatedGreenhouses[id].currentData.temperature < threshold - hysteresis && 
-                           greenhouse.settings.ventStatus === 'open') {
-                  updatedGreenhouses[id].settings.ventStatus = 'closing';
-                  // Simulate the delay for closing
-                  setTimeout(() => {
-                    setState(prevState => {
-                      const updated = { ...prevState };
-                      if (updated.greenhouses[id]) {
-                        updated.greenhouses[id].settings.ventStatus = 'closed';
-                      }
-                      return updated;
-                    });
-                  }, 5000);
-                }
-              }
-            });
-            
-            return {
-              ...prevState,
-              greenhouses: updatedGreenhouses
-            };
-          });
-        }, 10000); // Update every 10 seconds
-        
-        return () => clearInterval(interval);
-      } catch (error) {
-        setState({
-          greenhouses: {},
-          loading: false,
-          error: "Failed to load greenhouse data"
-        });
-      }
-    };
-
-    fetchData();
+    try {
+      // In a real implementation, this would fetch from Firebase
+      const data = mockGreenhouseData;
+      setGreenhouses(data);
+      setLoading(false);
+    } catch (err) {
+      setError('Error loading greenhouse data');
+      setLoading(false);
+      console.error(err);
+    }
   }, []);
-
+  
   // Function to update settings for a specific greenhouse
-  const updateGreenhouseSettings = (id: number, newSettings: Partial<Greenhouse['settings']>) => {
-    setState(prevState => {
-      if (!prevState.greenhouses[id]) return prevState;
+  const updateGreenhouseSettings = (id: number, settings: Partial<Greenhouse['settings']>) => {
+    setGreenhouses(prev => {
+      if (!prev[id]) return prev;
       
-      const updatedGreenhouse = {
-        ...prevState.greenhouses[id],
-        settings: {
-          ...prevState.greenhouses[id].settings,
-          ...newSettings
+      const updated = {
+        ...prev,
+        [id]: {
+          ...prev[id],
+          settings: {
+            ...prev[id].settings,
+            ...settings
+          }
         }
       };
       
-      // Handle manual controls
-      if (newSettings.manualControl) {
-        if (newSettings.manualControl === 'open' && updatedGreenhouse.settings.ventStatus === 'closed') {
-          updatedGreenhouse.settings.ventStatus = 'opening';
-          setTimeout(() => {
-            setState(prevState => {
-              const updated = { ...prevState };
-              if (updated.greenhouses[id]) {
-                updated.greenhouses[id].settings.ventStatus = 'open';
-                // Clear the manual control command
-                updated.greenhouses[id].settings.manualControl = undefined;
-              }
-              return updated;
-            });
-          }, 5000);
-        } else if (newSettings.manualControl === 'close' && updatedGreenhouse.settings.ventStatus === 'open') {
-          updatedGreenhouse.settings.ventStatus = 'closing';
-          setTimeout(() => {
-            setState(prevState => {
-              const updated = { ...prevState };
-              if (updated.greenhouses[id]) {
-                updated.greenhouses[id].settings.ventStatus = 'closed';
-                // Clear the manual control command
-                updated.greenhouses[id].settings.manualControl = undefined;
-              }
-              return updated;
-            });
-          }, 5000);
-        }
+      // Show a notification for the change
+      const settingName = Object.keys(settings)[0];
+      let message = '';
+      
+      if (settingName === 'temperatureThreshold') {
+        message = `Temperature threshold updated to ${settings.temperatureThreshold}°C`;
+      } else if (settingName === 'mode') {
+        message = `Mode changed to ${settings.mode}`;
+      } else if (settingName === 'manualControl') {
+        message = `Manual control: ${settings.manualControl}`;
       }
       
-      return {
-        ...prevState,
-        greenhouses: {
-          ...prevState.greenhouses,
-          [id]: updatedGreenhouse
-        }
-      };
+      toast({
+        title: `Greenhouse ${id} Updated`,
+        description: message,
+      });
+      
+      // In a real implementation, this would update Firebase
+      console.log(`Updating greenhouse ${id} settings:`, settings);
+      
+      return updated;
     });
   };
-
-  return {
-    ...state,
-    updateGreenhouseSettings
+  
+  // Function to control all greenhouses at once
+  const controlAllGreenhouses = (action: 'open' | 'close') => {
+    // Update all greenhouses in state
+    setGreenhouses(prev => {
+      const updated = { ...prev };
+      
+      Object.keys(updated).forEach(key => {
+        const id = Number(key);
+        updated[id] = {
+          ...updated[id],
+          settings: {
+            ...updated[id].settings,
+            mode: 'manual',
+            manualControl: action,
+            ventStatus: action === 'open' ? 'opening' : 'closing'
+          }
+        };
+      });
+      
+      // In a real implementation, this would update Firebase
+      console.log(`Controlling all greenhouses: ${action}`);
+      
+      return updated;
+    });
+    
+    // In a real implementation, this delay would be handled by the ESP32 hub
+    // Here we're simulating the state changes
+    setTimeout(() => {
+      setGreenhouses(prev => {
+        const updated = { ...prev };
+        
+        Object.keys(updated).forEach(key => {
+          const id = Number(key);
+          updated[id] = {
+            ...updated[id],
+            settings: {
+              ...updated[id].settings,
+              manualControl: null,
+              ventStatus: action === 'open' ? 'open' : 'closed'
+            }
+          };
+        });
+        
+        return updated;
+      });
+    }, 2000);
   };
-};
-
-export default useGreenhouseData;
+  
+  return { 
+    greenhouses, 
+    loading, 
+    error, 
+    updateGreenhouseSettings,
+    controlAllGreenhouses
+  };
+}

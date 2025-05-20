@@ -29,6 +29,12 @@ These components communicate as follows:
    - ESP32 hub sends commands to appropriate ESP-01 node
    - ESP-01 node controls greenhouse ventilation
 
+3. **Global Control Flow**:
+   - User selects "Open All" or "Close All" in web dashboard
+   - Command is written to Firebase system/controlAll path
+   - ESP32 hub reads command and sends to all online nodes
+   - ESP-01 nodes execute command simultaneously
+
 ## Firebase Data Structure
 
 The Firebase Realtime Database serves as the bridge between hardware and web app with this structure:
@@ -53,6 +59,10 @@ The Firebase Realtime Database serves as the bridge between hardware and web app
 /system
   /lastSync: 1621432567000
   /hubStatus: "online"
+  /controlAll: ""        # Command to control all greenhouses: "open", "close", or ""
+  /lastControlAll
+    /action: "open"      # Last global action performed
+    /timestamp: 1621432567000
 ```
 
 ## Setting Up the Integration
@@ -102,6 +112,11 @@ The web dashboard allows changing these settings for each greenhouse:
    - Web input updates `/greenhouses/{id}/settings/manualControl`
    - ESP32 monitors this value, forwards command to ESP-01, then resets to null
 
+5. **Global control**: Controls all greenhouses simultaneously
+   - Web input updates `/system/controlAll` with "open" or "close"
+   - ESP32 monitors this value, forwards command to all ESP-01 nodes, then resets to empty string
+   - ESP32 also updates `/system/lastControlAll` with action and timestamp
+
 ## Testing Web Integration
 
 Test the complete system with these steps:
@@ -119,6 +134,12 @@ Test the complete system with these steps:
    - Switch a greenhouse to manual mode
    - Send open/close commands
    - Verify ventilation motor responds correctly
+
+4. **Global control test**:
+   - Use "Open All" or "Close All" button on dashboard
+   - Verify all connected greenhouses respond
+   - Check ESP32 display shows mode changes
+   - Verify motors operate correctly
 
 ## Troubleshooting Integration Issues
 
@@ -145,6 +166,14 @@ Test the complete system with these steps:
 - Node ID mismatch: Verify node IDs are consistent across system
 - ESP-01 not responding: Check power and connections at node
 - Command format issue: Debug command structure between ESP32 and ESP-01
+
+### Global Control Not Working
+
+**Possible causes and solutions:**
+- Firebase path mismatch: Verify path is `/system/controlAll`
+- Data format issue: Command should be string "open" or "close"
+- ESP32 not processing: Check control all handling in ESP32 code
+- ESP-NOW broadcast issue: Verify broadcast addressing in ESP32
 
 ## Remote Monitoring Best Practices
 
@@ -184,12 +213,43 @@ Consider implementing these advanced features:
    - Create admin and viewer roles
    - Add audit logging for changes
 
+## Using the Three-Button Navigation System
+
+The ESP32 hub features a three-button navigation system:
+1. **UP button**: Navigate up or increase values
+2. **SELECT button**: Select menu items or confirm changes
+3. **DOWN button**: Navigate down or decrease values
+
+These buttons allow for easy navigation through the menu system, with different behaviors depending on the current screen:
+
+1. In the overview screen:
+   - UP/DOWN: Navigate between greenhouses
+   - SELECT: View detailed information for selected greenhouse
+
+2. In the greenhouse detail screen:
+   - UP/DOWN: Navigate between settings
+   - SELECT: Edit selected setting
+   - When editing:
+     - UP: Increase value
+     - DOWN: Decrease value
+     - SELECT: Confirm change
+
+3. In the settings screen:
+   - UP: Go to "Control All" screen
+   - DOWN: Return to greenhouse detail
+   - SELECT: Return to overview
+
+4. In the "Control All" screen:
+   - UP/DOWN: Toggle between "Open All" and "Close All"
+   - SELECT: Execute selected command
+
 ## Conclusion
 
 When properly integrated, the hardware system and web dashboard provide a complete greenhouse automation solution featuring:
 
 - Real-time monitoring of all greenhouses
 - Remote control capabilities from anywhere
+- Global control for all greenhouses simultaneously
 - Data visualization and analysis
 - Fault tolerance and autonomous operation
 - Customizable settings for each greenhouse

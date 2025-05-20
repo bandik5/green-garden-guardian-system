@@ -1,4 +1,3 @@
-
 /*
  * ESP32 Hub Firmware for Greenhouse Automation System
  * 
@@ -28,6 +27,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // ----- BUTTON CONFIGURATION -----
 #define BUTTON_UP     32
 #define BUTTON_SELECT 33
+#define BUTTON_DOWN   25  // Added third button for DOWN navigation
 #define DEBOUNCE_TIME 200
 
 // ----- WIFI CONFIGURATION -----
@@ -57,14 +57,17 @@ unsigned long displayUpdateInterval = 1000;  // 1 second
 // Button state
 bool buttonUpPressed = false;
 bool buttonSelectPressed = false;
+bool buttonDownPressed = false;  // New button state
 bool buttonUpLast = false;
 bool buttonSelectLast = false;
+bool buttonDownLast = false;     // New button last state
 
 // Menu system
-enum MenuState {OVERVIEW, GREENHOUSE_DETAIL, SETTINGS};
+enum MenuState {OVERVIEW, GREENHOUSE_DETAIL, SETTINGS, CONTROL_ALL};  // Added CONTROL_ALL menu
 MenuState currentMenu = OVERVIEW;
 uint8_t selectedGreenhouse = 1;
 uint8_t settingSelection = 0; // 0:threshold, 1:hysteresis, 2:mode
+uint8_t controlAllSelection = 0; // 0:open all, 1:close all
 bool editingValue = false;
 
 // Data structures for nodes
@@ -115,9 +118,11 @@ void updateDisplay();
 void showOverviewScreen();
 void showGreenhouseDetailScreen();
 void showSettingsScreen();
+void showControlAllScreen();  // New screen for controlling all greenhouses
 void processMenuNavigation();
 void syncWithFirebase();
 void sendControlToNode(uint8_t nodeId);
+void sendControlToAllNodes(char command);  // New function to control all nodes
 void onDataReceived(const uint8_t *mac, const uint8_t *data, int len);
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 
@@ -210,8 +215,10 @@ void initDisplay() {
 void initButtons() {
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_SELECT, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);  // Initialize the new DOWN button
 }
 
+// ----- WIFI INITIALIZATION -----
 void initWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid, password);
@@ -228,6 +235,7 @@ void initWiFi() {
   display.display();
 }
 
+// ----- FIREBASE INITIALIZATION -----
 void initFirebase() {
   // Configure Firebase API Key and RTDB URL
   config.api_key = API_KEY;
@@ -240,6 +248,7 @@ void initFirebase() {
   Firebase.reconnectWiFi(true);
 }
 
+// ----- ESP-NOW INITIALIZATION -----
 void initESPNow() {
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
@@ -288,6 +297,7 @@ void checkButtons() {
   // Read current button state with debounce
   bool upCurrent = digitalRead(BUTTON_UP) == LOW;
   bool selectCurrent = digitalRead(BUTTON_SELECT) == LOW;
+  bool downCurrent = digitalRead(BUTTON_DOWN) == LOW;  // Read the DOWN button
   
   // Detect button presses (transition from not pressed to pressed)
   if (upCurrent && !buttonUpLast) {
@@ -298,15 +308,21 @@ void checkButtons() {
     buttonSelectPressed = true;
   }
   
+  if (downCurrent && !buttonDownLast) {
+    buttonDownPressed = true;
+  }
+  
   // Save current state for next comparison
   buttonUpLast = upCurrent;
   buttonSelectLast = selectCurrent;
+  buttonDownLast = downCurrent;
   
   // Process navigation if button was pressed
-  if (buttonUpPressed || buttonSelectPressed) {
+  if (buttonUpPressed || buttonSelectPressed || buttonDownPressed) {
     processMenuNavigation();
     buttonUpPressed = false;
     buttonSelectPressed = false;
+    buttonDownPressed = false;
   }
 }
 
@@ -316,15 +332,18 @@ void processMenuNavigation() {
     case OVERVIEW:
       if (buttonUpPressed) {
         selectedGreenhouse = (selectedGreenhouse % MAX_GREENHOUSES) + 1;
+      } else if (buttonDownPressed) {
+        selectedGreenhouse = (selectedGreenhouse > 1) ? selectedGreenhouse - 1 : MAX_GREENHOUSES;
       } else if (buttonSelectPressed) {
         currentMenu = GREENHOUSE_DETAIL;
       }
       break;
       
     case GREENHOUSE_DETAIL:
-      if (buttonUpPressed) {
-        if (editingValue) {
-          // Adjust the selected setting value
+      if (editingValue) {
+        // Adjusting the selected setting value
+        if (buttonUpPressed) {
+          // Increase value
           switch (settingSelection) {
             case 0: // Temperature threshold
               greenhouses[selectedGreenhouse].settings.temperatureThreshold += 0.5;
@@ -339,33 +358,76 @@ void processMenuNavigation() {
               }
               break;
             case 2: // Mode
-              greenhouses[selectedGreenhouse].settings.autoMode = 
-                !greenhouses[selectedGreenhouse].settings.autoMode;
+              greenhouses[selectedGreenhouse].settings.autoMode = true;
               break;
           }
-          // Send updated settings to node
           sendControlToNode(selectedGreenhouse);
           saveSettingsToEEPROM();
-        } else {
-          // Cycle through settings
-          settingSelection = (settingSelection + 1) % 3;
-        }
-      } else if (buttonSelectPressed) {
-        if (editingValue) {
+        } else if (buttonDownPressed) {
+          // Decrease value
+          switch (settingSelection) {
+            case 0: // Temperature threshold
+              greenhouses[selectedGreenhouse].settings.temperatureThreshold -= 0.5;
+              if (greenhouses[selectedGreenhouse].settings.temperatureThreshold < 15) {
+                greenhouses[selectedGreenhouse].settings.temperatureThreshold = 40;
+              }
+              break;
+            case 1: // Hysteresis
+              greenhouses[selectedGreenhouse].settings.hysteresis -= 0.1;
+              if (greenhouses[selectedGreenhouse].settings.hysteresis < 0.1) {
+                greenhouses[selectedGreenhouse].settings.hysteresis = 2.0;
+              }
+              break;
+            case 2: // Mode
+              greenhouses[selectedGreenhouse].settings.autoMode = false;
+              break;
+          }
+          sendControlToNode(selectedGreenhouse);
+          saveSettingsToEEPROM();
+        } else if (buttonSelectPressed) {
           editingValue = false; // Stop editing
-        } else if (settingSelection < 3) {
-          editingValue = true;  // Start editing
-        } else {
-          currentMenu = SETTINGS; // Move to next menu
+        }
+      } else {
+        // Not editing, navigating between settings
+        if (buttonUpPressed) {
+          settingSelection = (settingSelection + 1) % 3;
+        } else if (buttonDownPressed) {
+          settingSelection = (settingSelection > 0) ? settingSelection - 1 : 2;
+        } else if (buttonSelectPressed) {
+          if (settingSelection < 3) {
+            editingValue = true;  // Start editing
+          } else {
+            currentMenu = SETTINGS; // Move to next menu
+          }
         }
       }
       break;
       
     case SETTINGS:
       if (buttonUpPressed) {
-        // Cycle through system settings
+        // Go to Control All menu
+        currentMenu = CONTROL_ALL;
+      } else if (buttonDownPressed) {
+        // Return to greenhouse detail
+        currentMenu = GREENHOUSE_DETAIL;
       } else if (buttonSelectPressed) {
         currentMenu = OVERVIEW; // Go back to main screen
+      }
+      break;
+      
+    case CONTROL_ALL:
+      if (buttonUpPressed) {
+        controlAllSelection = (controlAllSelection + 1) % 2;  // Toggle between open/close
+      } else if (buttonDownPressed) {
+        controlAllSelection = (controlAllSelection > 0) ? 0 : 1;  // Toggle between open/close
+      } else if (buttonSelectPressed) {
+        // Execute control all command
+        if (controlAllSelection == 0) {
+          sendControlToAllNodes('O');  // Open all
+        } else {
+          sendControlToAllNodes('C');  // Close all
+        }
+        currentMenu = OVERVIEW;  // Return to overview after command
       }
       break;
   }
@@ -394,6 +456,9 @@ void updateDisplay() {
       break;
     case SETTINGS:
       showSettingsScreen();
+      break;
+    case CONTROL_ALL:
+      showControlAllScreen();
       break;
   }
   
@@ -443,7 +508,7 @@ void showOverviewScreen() {
   
   display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
   display.setCursor(0, 56);
-  display.print("UP:Next  SEL:Detail");
+  display.print("UP/DOWN:Nav SEL:Detail");
 }
 
 void showGreenhouseDetailScreen() {
@@ -542,7 +607,37 @@ void showSettingsScreen() {
   
   display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
   display.setCursor(0, 56);
-  display.print("SEL:Back to Overview");
+  display.print("UP:AllCtrl DOWN:Det SEL:Back");
+}
+
+void showControlAllScreen() {
+  display.setCursor(0, 0);
+  display.println("CONTROL ALL GREENHOUSES");
+  display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
+  
+  display.setCursor(0, 20);
+  display.print("Select action:");
+  
+  // Highlight selected option
+  if (controlAllSelection == 0) {
+    display.fillRect(0, 30, 128, 10, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  }
+  display.setCursor(0, 32);
+  display.print("OPEN ALL GREENHOUSES");
+  display.setTextColor(SSD1306_WHITE);
+  
+  if (controlAllSelection == 1) {
+    display.fillRect(0, 42, 128, 10, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  }
+  display.setCursor(0, 44);
+  display.print("CLOSE ALL GREENHOUSES");
+  display.setTextColor(SSD1306_WHITE);
+  
+  display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
+  display.setCursor(0, 56);
+  display.print("UP/DOWN:Nav SEL:Execute");
 }
 
 // ----- FIREBASE SYNC FUNCTIONS -----
@@ -706,6 +801,38 @@ void sendControlToNode(uint8_t nodeId) {
   
   // Clear manual command after sending
   greenhouses[nodeId].settings.manualCommand = 0;
+}
+
+void sendControlToAllNodes(char command) {
+  Serial.print("Sending command to all nodes: ");
+  Serial.println(command);
+  
+  for (int i = 1; i <= MAX_GREENHOUSES; i++) {
+    // Skip nodes that are offline
+    if (!greenhouses[i].isOnline || 
+        (millis() - greenhouses[i].lastSeen > 300000)) {
+      continue;
+    }
+    
+    // Set the command for each greenhouse
+    greenhouses[i].settings.manualCommand = command;
+    
+    // Also set to manual mode temporarily if opening/closing all
+    if (command == 'O' || command == 'C') {
+      greenhouses[i].settings.autoMode = false;
+    }
+    
+    // Send the command to the node
+    sendControlToNode(i);
+  }
+  
+  // Update Firebase with new states
+  if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
+    FirebaseJson json;
+    json.set("action", String(command == 'O' ? "open" : "close"));
+    json.set("timestamp", (uint32_t)time(NULL));
+    Firebase.RTDB.setJSON(&fbdo, "/system/lastControlAll", &json);
+  }
 }
 
 void onDataReceived(const uint8_t *mac, const uint8_t *data, int len) {

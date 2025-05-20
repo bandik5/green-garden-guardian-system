@@ -1,13 +1,14 @@
 
 import React from 'react';
 import GlanceCard from '@/components/GlanceCard';
+import GlobalControls from '@/components/GlobalControls';
 import { useGreenhouseData } from '@/hooks/useGreenhouseData';
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CircleX } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 
 const Dashboard: React.FC = () => {
-  const { greenhouses, loading, error } = useGreenhouseData();
+  const { greenhouses, loading, error, controlAllGreenhouses } = useGreenhouseData();
   
   if (error) {
     return (
@@ -48,6 +49,11 @@ const Dashboard: React.FC = () => {
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Greenhouse Dashboard</h1>
+      
+      {/* Global Controls */}
+      <div className="mb-6">
+        <GlobalControls onControlAll={controlAllGreenhouses} />
+      </div>
       
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {Object.values(greenhouses).map((greenhouse) => (
