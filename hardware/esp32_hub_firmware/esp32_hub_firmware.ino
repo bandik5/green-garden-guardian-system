@@ -1,3 +1,4 @@
+
 /*
  * ESP32 Hub Firmware for Greenhouse Automation System
  * 
@@ -27,8 +28,10 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // ----- BUTTON CONFIGURATION -----
 #define BUTTON_UP     32
 #define BUTTON_SELECT 33
-#define BUTTON_DOWN   25  // Added third button for DOWN navigation
+#define BUTTON_DOWN   25
 #define DEBOUNCE_TIME 200
+#define LONG_PRESS_TIME 2000  // 2 seconds for long press
+#define MENU_TIMEOUT 20000    // 20 seconds timeout
 
 // ----- WIFI CONFIGURATION -----
 const char* ssid = "YOUR_WIFI_SSID";
@@ -50,6 +53,8 @@ FirebaseConfig config;
 unsigned long lastFirebaseSync = 0;
 unsigned long lastButtonCheck = 0;
 unsigned long lastDisplayUpdate = 0;
+unsigned long lastMenuActivity = 0;  // For timeout
+unsigned long selectPressStart = 0;  // For long press detection
 unsigned long firebaseSyncInterval = 30000;  // 30 seconds
 unsigned long buttonCheckInterval = 50;      // 50 ms
 unsigned long displayUpdateInterval = 1000;  // 1 second
@@ -57,16 +62,19 @@ unsigned long displayUpdateInterval = 1000;  // 1 second
 // Button state
 bool buttonUpPressed = false;
 bool buttonSelectPressed = false;
-bool buttonDownPressed = false;  // New button state
+bool buttonDownPressed = false;
 bool buttonUpLast = false;
 bool buttonSelectLast = false;
-bool buttonDownLast = false;     // New button last state
+bool buttonDownLast = false;
+bool selectLongPressed = false;
+bool selectCurrentlyPressed = false;
 
 // Menu system
-enum MenuState {OVERVIEW, GREENHOUSE_DETAIL, SETTINGS, CONTROL_ALL};  // Added CONTROL_ALL menu
+enum MenuState {OVERVIEW, GREENHOUSE_DETAIL, SCHEDULE_SETTING, MANUAL_CONTROL_ALL};
 MenuState currentMenu = OVERVIEW;
 uint8_t selectedGreenhouse = 1;
-uint8_t settingSelection = 0; // 0:threshold, 1:hysteresis, 2:mode
+uint8_t settingSelection = 0; // 0:threshold, 1:schedule, 2:manual
+uint8_t scheduleSelection = 0; // 0:open_time, 1:close_time
 uint8_t controlAllSelection = 0; // 0:open all, 1:close all
 bool editingValue = false;
 
@@ -82,11 +90,20 @@ struct SensorData {
   uint32_t timestamp;
 };
 
+struct ScheduleSettings {
+  uint8_t openHour = 8;    // Default open at 8 AM
+  uint8_t openMinute = 0;
+  uint8_t closeHour = 18;  // Default close at 6 PM
+  uint8_t closeMinute = 0;
+  bool scheduleEnabled = false;
+};
+
 struct GreenhouseSettings {
   float temperatureThreshold = 25.0;
   float hysteresis = 0.5;
   bool autoMode = true;
   char manualCommand = 0;
+  ScheduleSettings schedule;
 };
 
 struct GreenhouseData {
@@ -117,12 +134,14 @@ void checkButtons();
 void updateDisplay();
 void showOverviewScreen();
 void showGreenhouseDetailScreen();
-void showSettingsScreen();
-void showControlAllScreen();  // New screen for controlling all greenhouses
+void showScheduleSettingScreen();
+void showManualControlAllScreen();
 void processMenuNavigation();
+void checkMenuTimeout();
+void resetMenuTimeout();
 void syncWithFirebase();
 void sendControlToNode(uint8_t nodeId);
-void sendControlToAllNodes(char command);  // New function to control all nodes
+void sendControlToAllNodes(char command);
 void onDataReceived(const uint8_t *mac, const uint8_t *data, int len);
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 
@@ -163,6 +182,9 @@ void setup() {
     greenhouses[i].sensor.ventStatus = 0; // CLOSED
   }
   
+  // Reset menu timeout
+  resetMenuTimeout();
+  
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -181,6 +203,9 @@ void loop() {
     checkButtons();
     lastButtonCheck = currentMillis;
   }
+  
+  // Check menu timeout
+  checkMenuTimeout();
   
   // Update display
   if (currentMillis - lastDisplayUpdate >= displayUpdateInterval) {
@@ -215,7 +240,7 @@ void initDisplay() {
 void initButtons() {
   pinMode(BUTTON_UP, INPUT_PULLUP);
   pinMode(BUTTON_SELECT, INPUT_PULLUP);
-  pinMode(BUTTON_DOWN, INPUT_PULLUP);  // Initialize the new DOWN button
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
 }
 
 // ----- WIFI INITIALIZATION -----
@@ -223,10 +248,6 @@ void initWiFi() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi ..");
-  
-  // Non-blocking WiFi connection attempt
-  // The system will try to connect in the background
-  // and proceed with ESP-NOW functionality regardless
   
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -295,19 +316,46 @@ void loadSettingsFromEEPROM() {
   }
 }
 
+void resetMenuTimeout() {
+  lastMenuActivity = millis();
+}
+
+void checkMenuTimeout() {
+  if (currentMenu != OVERVIEW && 
+      millis() - lastMenuActivity > MENU_TIMEOUT) {
+    currentMenu = OVERVIEW;
+    editingValue = false;
+    selectLongPressed = false;
+    Serial.println("Menu timeout - returning to overview");
+  }
+}
+
 void checkButtons() {
-  // Read current button state with debounce
+  // Read current button state
   bool upCurrent = digitalRead(BUTTON_UP) == LOW;
   bool selectCurrent = digitalRead(BUTTON_SELECT) == LOW;
-  bool downCurrent = digitalRead(BUTTON_DOWN) == LOW;  // Read the DOWN button
+  bool downCurrent = digitalRead(BUTTON_DOWN) == LOW;
+  
+  // Handle SELECT button long press detection
+  if (selectCurrent && !selectCurrentlyPressed) {
+    // SELECT just pressed
+    selectPressStart = millis();
+    selectCurrentlyPressed = true;
+  } else if (!selectCurrent && selectCurrentlyPressed) {
+    // SELECT just released
+    unsigned long pressDuration = millis() - selectPressStart;
+    selectCurrentlyPressed = false;
+    
+    if (pressDuration >= LONG_PRESS_TIME) {
+      selectLongPressed = true;
+    } else {
+      buttonSelectPressed = true;
+    }
+  }
   
   // Detect button presses (transition from not pressed to pressed)
   if (upCurrent && !buttonUpLast) {
     buttonUpPressed = true;
-  }
-  
-  if (selectCurrent && !buttonSelectLast) {
-    buttonSelectPressed = true;
   }
   
   if (downCurrent && !buttonDownLast) {
@@ -320,11 +368,13 @@ void checkButtons() {
   buttonDownLast = downCurrent;
   
   // Process navigation if button was pressed
-  if (buttonUpPressed || buttonSelectPressed || buttonDownPressed) {
+  if (buttonUpPressed || buttonSelectPressed || buttonDownPressed || selectLongPressed) {
+    resetMenuTimeout();
     processMenuNavigation();
     buttonUpPressed = false;
     buttonSelectPressed = false;
     buttonDownPressed = false;
+    selectLongPressed = false;
   }
 }
 
@@ -338,6 +388,10 @@ void processMenuNavigation() {
         selectedGreenhouse = (selectedGreenhouse > 1) ? selectedGreenhouse - 1 : MAX_GREENHOUSES;
       } else if (buttonSelectPressed) {
         currentMenu = GREENHOUSE_DETAIL;
+        settingSelection = 0;
+      } else if (selectLongPressed) {
+        currentMenu = MANUAL_CONTROL_ALL;
+        controlAllSelection = 0;
       }
       break;
       
@@ -352,19 +406,10 @@ void processMenuNavigation() {
               if (greenhouses[selectedGreenhouse].settings.temperatureThreshold > 40) {
                 greenhouses[selectedGreenhouse].settings.temperatureThreshold = 15;
               }
-              break;
-            case 1: // Hysteresis
-              greenhouses[selectedGreenhouse].settings.hysteresis += 0.1;
-              if (greenhouses[selectedGreenhouse].settings.hysteresis > 2.0) {
-                greenhouses[selectedGreenhouse].settings.hysteresis = 0.1;
-              }
-              break;
-            case 2: // Mode
-              greenhouses[selectedGreenhouse].settings.autoMode = true;
+              sendControlToNode(selectedGreenhouse);
+              saveSettingsToEEPROM();
               break;
           }
-          sendControlToNode(selectedGreenhouse);
-          saveSettingsToEEPROM();
         } else if (buttonDownPressed) {
           // Decrease value
           switch (settingSelection) {
@@ -373,55 +418,109 @@ void processMenuNavigation() {
               if (greenhouses[selectedGreenhouse].settings.temperatureThreshold < 15) {
                 greenhouses[selectedGreenhouse].settings.temperatureThreshold = 40;
               }
-              break;
-            case 1: // Hysteresis
-              greenhouses[selectedGreenhouse].settings.hysteresis -= 0.1;
-              if (greenhouses[selectedGreenhouse].settings.hysteresis < 0.1) {
-                greenhouses[selectedGreenhouse].settings.hysteresis = 2.0;
-              }
-              break;
-            case 2: // Mode
-              greenhouses[selectedGreenhouse].settings.autoMode = false;
+              sendControlToNode(selectedGreenhouse);
+              saveSettingsToEEPROM();
               break;
           }
-          sendControlToNode(selectedGreenhouse);
-          saveSettingsToEEPROM();
         } else if (buttonSelectPressed) {
           editingValue = false; // Stop editing
         }
       } else {
         // Not editing, navigating between settings
         if (buttonUpPressed) {
-          settingSelection = (settingSelection + 1) % 3;
+          settingSelection = (settingSelection + 1) % 3;  // 0:temp, 1:schedule, 2:manual
         } else if (buttonDownPressed) {
           settingSelection = (settingSelection > 0) ? settingSelection - 1 : 2;
         } else if (buttonSelectPressed) {
-          if (settingSelection < 3) {
-            editingValue = true;  // Start editing
+          if (settingSelection == 0) {
+            editingValue = true;  // Edit temperature
+          } else if (settingSelection == 1) {
+            currentMenu = SCHEDULE_SETTING;  // Go to schedule
+            scheduleSelection = 0;
+          } else if (settingSelection == 2) {
+            // Manual control
+            greenhouses[selectedGreenhouse].settings.autoMode = false;
+            greenhouses[selectedGreenhouse].settings.manualCommand = 'O';  // Open
+            sendControlToNode(selectedGreenhouse);
+          }
+        } else if (selectLongPressed) {
+          currentMenu = MANUAL_CONTROL_ALL;
+          controlAllSelection = 0;
+        }
+      }
+      break;
+      
+    case SCHEDULE_SETTING:
+      if (editingValue) {
+        // Adjusting schedule values
+        if (buttonUpPressed) {
+          switch (scheduleSelection) {
+            case 0: // Open hour
+              greenhouses[selectedGreenhouse].settings.schedule.openHour = 
+                (greenhouses[selectedGreenhouse].settings.schedule.openHour + 1) % 24;
+              break;
+            case 1: // Open minute
+              greenhouses[selectedGreenhouse].settings.schedule.openMinute = 
+                (greenhouses[selectedGreenhouse].settings.schedule.openMinute + 15) % 60;
+              break;
+            case 2: // Close hour
+              greenhouses[selectedGreenhouse].settings.schedule.closeHour = 
+                (greenhouses[selectedGreenhouse].settings.schedule.closeHour + 1) % 24;
+              break;
+            case 3: // Close minute
+              greenhouses[selectedGreenhouse].settings.schedule.closeMinute = 
+                (greenhouses[selectedGreenhouse].settings.schedule.closeMinute + 15) % 60;
+              break;
+          }
+          saveSettingsToEEPROM();
+        } else if (buttonDownPressed) {
+          switch (scheduleSelection) {
+            case 0: // Open hour
+              greenhouses[selectedGreenhouse].settings.schedule.openHour = 
+                (greenhouses[selectedGreenhouse].settings.schedule.openHour == 0) ? 23 : 
+                greenhouses[selectedGreenhouse].settings.schedule.openHour - 1;
+              break;
+            case 1: // Open minute
+              greenhouses[selectedGreenhouse].settings.schedule.openMinute = 
+                (greenhouses[selectedGreenhouse].settings.schedule.openMinute == 0) ? 45 : 
+                greenhouses[selectedGreenhouse].settings.schedule.openMinute - 15;
+              break;
+            case 2: // Close hour
+              greenhouses[selectedGreenhouse].settings.schedule.closeHour = 
+                (greenhouses[selectedGreenhouse].settings.schedule.closeHour == 0) ? 23 : 
+                greenhouses[selectedGreenhouse].settings.schedule.closeHour - 1;
+              break;
+            case 3: // Close minute
+              greenhouses[selectedGreenhouse].settings.schedule.closeMinute = 
+                (greenhouses[selectedGreenhouse].settings.schedule.closeMinute == 0) ? 45 : 
+                greenhouses[selectedGreenhouse].settings.schedule.closeMinute - 15;
+              break;
+          }
+          saveSettingsToEEPROM();
+        } else if (buttonSelectPressed) {
+          editingValue = false;
+        }
+      } else {
+        // Navigate schedule options
+        if (buttonUpPressed) {
+          scheduleSelection = (scheduleSelection + 1) % 4;
+        } else if (buttonDownPressed) {
+          scheduleSelection = (scheduleSelection > 0) ? scheduleSelection - 1 : 3;
+        } else if (buttonSelectPressed) {
+          if (scheduleSelection < 4) {
+            editingValue = true;
           } else {
-            currentMenu = SETTINGS; // Move to next menu
+            currentMenu = GREENHOUSE_DETAIL;
           }
         }
       }
       break;
       
-    case SETTINGS:
+    case MANUAL_CONTROL_ALL:
       if (buttonUpPressed) {
-        // Go to Control All menu
-        currentMenu = CONTROL_ALL;
+        controlAllSelection = (controlAllSelection + 1) % 2;
       } else if (buttonDownPressed) {
-        // Return to greenhouse detail
-        currentMenu = GREENHOUSE_DETAIL;
-      } else if (buttonSelectPressed) {
-        currentMenu = OVERVIEW; // Go back to main screen
-      }
-      break;
-      
-    case CONTROL_ALL:
-      if (buttonUpPressed) {
-        controlAllSelection = (controlAllSelection + 1) % 2;  // Toggle between open/close
-      } else if (buttonDownPressed) {
-        controlAllSelection = (controlAllSelection > 0) ? 0 : 1;  // Toggle between open/close
+        controlAllSelection = (controlAllSelection > 0) ? 0 : 1;
       } else if (buttonSelectPressed) {
         // Execute control all command
         if (controlAllSelection == 0) {
@@ -456,11 +555,11 @@ void updateDisplay() {
     case GREENHOUSE_DETAIL:
       showGreenhouseDetailScreen();
       break;
-    case SETTINGS:
-      showSettingsScreen();
+    case SCHEDULE_SETTING:
+      showScheduleSettingScreen();
       break;
-    case CONTROL_ALL:
-      showControlAllScreen();
+    case MANUAL_CONTROL_ALL:
+      showManualControlAllScreen();
       break;
   }
   
@@ -473,44 +572,42 @@ void showOverviewScreen() {
   display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
   
   int y = 12;
-  // Show data for up to 6 greenhouses
+  // Show data for all 6 greenhouses with temperatures prominently
   for (int i = 1; i <= MAX_GREENHOUSES; i++) {
-    // Highlight selected greenhouse
+    // Highlight selected greenhouse with arrow
     if (i == selectedGreenhouse) {
-      display.fillRect(0, y, 128, 8, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK);
-    } else {
-      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, y);
+      display.print(">");
     }
     
-    display.setCursor(0, y);
+    display.setCursor(8, y);
     display.print(i);
     display.print(":");
     
     // Status indicator
     if (!greenhouses[i].isOnline || millis() - greenhouses[i].lastSeen > 300000) {
-      display.print(" OFFLINE");
+      display.print(" --.-C OFFLINE");
     } else {
+      // Show temperature prominently
       display.print(" ");
       display.print(greenhouses[i].sensor.temperature, 1);
       display.print("C ");
       
-      // Vent status
+      // Compact vent status
       switch (greenhouses[i].sensor.ventStatus) {
-        case 0: display.print("CLOSED"); break;
-        case 1: display.print("OPENING"); break;
-        case 2: display.print("OPEN"); break;
-        case 3: display.print("CLOSING"); break;
+        case 0: display.print("CL"); break;  // CLOSED
+        case 1: display.print("OP"); break;  // OPENING
+        case 2: display.print("OP"); break;  // OPEN
+        case 3: display.print("CL"); break;  // CLOSING
       }
     }
     
     y += 8;
-    display.setTextColor(SSD1306_WHITE); // Reset color
   }
   
   display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
   display.setCursor(0, 56);
-  display.print("UP/DOWN:Nav SEL:Detail");
+  display.print("UP/DN:Nav SEL:Set LONG:All");
 }
 
 void showGreenhouseDetailScreen() {
@@ -528,93 +625,111 @@ void showGreenhouseDetailScreen() {
     display.setCursor(0, 12);
     display.print("Temp: ");
     display.print(gh->sensor.temperature, 1);
-    display.println("C");
+    display.print("C (");
+    display.print(gh->settings.temperatureThreshold, 1);
+    display.println("C)");
     
-    display.setCursor(0, 21);
-    display.print("Hum:  ");
-    display.print(gh->sensor.humidity, 1);
-    display.println("%");
+    // Settings section with visual indicators
+    display.drawLine(0, 22, 128, 22, SSD1306_WHITE);
     
-    display.setCursor(0, 30);
-    display.print("Pres: ");
-    display.print(gh->sensor.pressure, 0);
-    display.println("hPa");
-    
-    // Settings section with edit indicators
-    display.drawLine(0, 39, 128, 39, SSD1306_WHITE);
-    
-    // Temperature threshold
+    // Temperature threshold setting
     if (settingSelection == 0) {
+      display.fillRect(0, 24, 128, 8, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
+    }
+    display.setCursor(0, 24);
+    display.print("1.Temp Thresh: ");
+    display.print(gh->settings.temperatureThreshold, 1);
+    display.print("C");
+    if (editingValue && settingSelection == 0) display.print(" *");
+    display.setTextColor(SSD1306_WHITE);
+    
+    // Schedule setting
+    if (settingSelection == 1) {
+      display.fillRect(0, 32, 128, 8, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
+    }
+    display.setCursor(0, 32);
+    display.print("2.Schedule: ");
+    display.printf("%02d:%02d-%02d:%02d", 
+      gh->settings.schedule.openHour, gh->settings.schedule.openMinute,
+      gh->settings.schedule.closeHour, gh->settings.schedule.closeMinute);
+    display.setTextColor(SSD1306_WHITE);
+    
+    // Manual control
+    if (settingSelection == 2) {
       display.fillRect(0, 40, 128, 8, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK);
     }
     display.setCursor(0, 40);
-    display.print("Thresh: ");
-    display.print(gh->settings.temperatureThreshold, 1);
-    display.print("C");
-    display.setTextColor(SSD1306_WHITE);
-    
-    // Hysteresis
-    if (settingSelection == 1) {
-      display.fillRect(0, 48, 128, 8, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK);
-    }
-    display.setCursor(0, 48);
-    display.print("Hyst: ");
-    display.print(gh->settings.hysteresis, 1);
-    display.print("C");
-    display.setTextColor(SSD1306_WHITE);
-    
-    // Mode
-    if (settingSelection == 2) {
-      display.fillRect(0, 56, 128, 8, SSD1306_WHITE);
-      display.setTextColor(SSD1306_BLACK);
-    }
-    display.setCursor(0, 56);
-    display.print("Mode: ");
+    display.print("3.Manual: ");
     display.print(gh->settings.autoMode ? "Auto" : "Manual");
     display.setTextColor(SSD1306_WHITE);
   }
   
-  // Show edit indicator
-  if (editingValue) {
-    display.setCursor(120, 56);
-    display.print("*");
-  }
+  display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
+  display.setCursor(0, 56);
+  display.print("UP/DN:Nav SEL:Edit");
 }
 
-void showSettingsScreen() {
+void showScheduleSettingScreen() {
+  GreenhouseData* gh = &greenhouses[selectedGreenhouse];
+  
   display.setCursor(0, 0);
-  display.println("SYSTEM SETTINGS");
+  display.print("SCHEDULE GH");
+  display.println(selectedGreenhouse);
   display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
   
-  display.setCursor(0, 16);
-  display.print("WiFi: ");
-  display.println(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected");
-  
-  display.setCursor(0, 25);
-  display.print("Firebase: ");
-  display.println(Firebase.ready() ? "Connected" : "Disconnected");
-  
-  display.setCursor(0, 34);
-  display.print("Active nodes: ");
-  int activeCount = 0;
-  for (int i = 1; i <= MAX_GREENHOUSES; i++) {
-    if (greenhouses[i].isOnline && 
-        (millis() - greenhouses[i].lastSeen < 300000)) {
-      activeCount++;
-    }
+  // Open time settings
+  if (scheduleSelection == 0) {
+    display.fillRect(0, 16, 60, 8, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
   }
-  display.println(activeCount);
+  display.setCursor(0, 16);
+  display.print("Open Hr: ");
+  display.print(gh->settings.schedule.openHour);
+  if (editingValue && scheduleSelection == 0) display.print(" *");
+  display.setTextColor(SSD1306_WHITE);
+  
+  if (scheduleSelection == 1) {
+    display.fillRect(0, 24, 60, 8, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  }
+  display.setCursor(0, 24);
+  display.print("Open Min: ");
+  display.print(gh->settings.schedule.openMinute);
+  if (editingValue && scheduleSelection == 1) display.print(" *");
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Close time settings
+  if (scheduleSelection == 2) {
+    display.fillRect(0, 32, 60, 8, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  }
+  display.setCursor(0, 32);
+  display.print("Close Hr: ");
+  display.print(gh->settings.schedule.closeHour);
+  if (editingValue && scheduleSelection == 2) display.print(" *");
+  display.setTextColor(SSD1306_WHITE);
+  
+  if (scheduleSelection == 3) {
+    display.fillRect(0, 40, 60, 8, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  }
+  display.setCursor(0, 40);
+  display.print("Close Min: ");
+  display.print(gh->settings.schedule.closeMinute);
+  if (editingValue && scheduleSelection == 3) display.print(" *");
+  display.setTextColor(SSD1306_WHITE);
   
   display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
   display.setCursor(0, 56);
-  display.print("UP:AllCtrl DOWN:Det SEL:Back");
+  display.print("+/-:Adjust SEL:OK");
 }
 
-void showControlAllScreen() {
+void showManualControlAllScreen() {
   display.setCursor(0, 0);
-  display.println("CONTROL ALL GREENHOUSES");
+  display.println("MANUAL CONTROL ALL");
   display.drawLine(0, 9, 128, 9, SSD1306_WHITE);
   
   display.setCursor(0, 20);
@@ -626,7 +741,7 @@ void showControlAllScreen() {
     display.setTextColor(SSD1306_BLACK);
   }
   display.setCursor(0, 32);
-  display.print("OPEN ALL GREENHOUSES");
+  display.print("OPEN ALL VENTS");
   display.setTextColor(SSD1306_WHITE);
   
   if (controlAllSelection == 1) {
@@ -634,12 +749,12 @@ void showControlAllScreen() {
     display.setTextColor(SSD1306_BLACK);
   }
   display.setCursor(0, 44);
-  display.print("CLOSE ALL GREENHOUSES");
+  display.print("CLOSE ALL VENTS");
   display.setTextColor(SSD1306_WHITE);
   
   display.drawLine(0, 55, 128, 55, SSD1306_WHITE);
   display.setCursor(0, 56);
-  display.print("UP/DOWN:Nav SEL:Execute");
+  display.print("+/-:Nav SEL:Execute");
 }
 
 // ----- FIREBASE SYNC FUNCTIONS -----
@@ -688,6 +803,13 @@ void syncWithFirebase() {
         default: ventStatus = "unknown"; break;
       }
       settingsJson.set("ventStatus", ventStatus);
+      
+      // Add schedule data
+      settingsJson.set("scheduleOpenHour", greenhouses[i].settings.schedule.openHour);
+      settingsJson.set("scheduleOpenMinute", greenhouses[i].settings.schedule.openMinute);
+      settingsJson.set("scheduleCloseHour", greenhouses[i].settings.schedule.closeHour);
+      settingsJson.set("scheduleCloseMinute", greenhouses[i].settings.schedule.closeMinute);
+      settingsJson.set("scheduleEnabled", greenhouses[i].settings.schedule.scheduleEnabled);
       
       // Path to settings
       path = "/greenhouses/" + String(i) + "/settings";
