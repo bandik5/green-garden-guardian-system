@@ -241,11 +241,15 @@ void initFirebase() {
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
 
-  // Anonymous authentication
-  auth.user.is_authenticated = true;
-
+  // Set up anonymous authentication
+  auth.user.email = "";
+  auth.user.password = "";
+  
+  // Initialize Firebase
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+  
+  Serial.println("Firebase initialized");
 }
 
 // ----- ESP-NOW INITIALIZATION -----
@@ -261,7 +265,6 @@ void initESPNow() {
   esp_now_register_send_cb(onDataSent);
 }
 
-// ----- EEPROM FUNCTIONS -----
 void saveSettingsToEEPROM() {
   // Save settings to EEPROM for power-loss recovery
   for (int i = 1; i <= MAX_GREENHOUSES; i++) {
@@ -292,7 +295,6 @@ void loadSettingsFromEEPROM() {
   }
 }
 
-// ----- UI INTERACTION FUNCTIONS -----
 void checkButtons() {
   // Read current button state with debounce
   bool upCurrent = digitalRead(BUTTON_UP) == LOW;
@@ -664,8 +666,8 @@ void syncWithFirebase() {
       // Path to the sensor data
       String path = "/greenhouses/" + String(i) + "/currentData";
       
-      // Update the data
-      if (Firebase.RTDB.setJSON(&fbdo, path, &json)) {
+      // Update the data using correct API
+      if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
         Serial.println("Uploaded data for greenhouse " + String(i));
       } else {
         Serial.println("Failed to upload: " + fbdo.errorReason());
@@ -691,7 +693,7 @@ void syncWithFirebase() {
       path = "/greenhouses/" + String(i) + "/settings";
       
       // Update settings
-      Firebase.RTDB.setJSON(&fbdo, path, &settingsJson);
+      Firebase.RTDB.setJSON(&fbdo, path.c_str(), &settingsJson);
     }
   }
   
@@ -699,7 +701,7 @@ void syncWithFirebase() {
   for (int i = 1; i <= MAX_GREENHOUSES; i++) {
     String path = "/greenhouses/" + String(i) + "/settings";
     
-    if (Firebase.RTDB.getJSON(&fbdo, path)) {
+    if (Firebase.RTDB.getJSON(&fbdo, path.c_str())) {
       if (fbdo.dataType() == "json") {
         FirebaseJson &json = fbdo.jsonObject();
         FirebaseJsonData result;
@@ -752,7 +754,7 @@ void syncWithFirebase() {
             // Clear the command in Firebase
             FirebaseJson clearJson;
             clearJson.set("manualControl", (const char*)NULL);
-            Firebase.RTDB.updateNode(&fbdo, path, &clearJson);
+            Firebase.RTDB.updateNode(&fbdo, path.c_str(), &clearJson);
           }
         }
         
@@ -830,7 +832,7 @@ void sendControlToAllNodes(char command) {
   if (WiFi.status() == WL_CONNECTED && Firebase.ready()) {
     FirebaseJson json;
     json.set("action", String(command == 'O' ? "open" : "close"));
-    json.set("timestamp", (uint32_t)time(NULL));
+    json.set("timestamp", (uint32_t)millis());
     Firebase.RTDB.setJSON(&fbdo, "/system/lastControlAll", &json);
   }
 }
