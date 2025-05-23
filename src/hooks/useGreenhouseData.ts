@@ -3,8 +3,8 @@ import { useState, useEffect } from 'react';
 import { Greenhouse } from '@/types';
 import { toast } from '@/components/ui/use-toast';
 
-// Import mock data (this would be replaced with Firebase in production)
-import { mockGreenhouseData } from '@/data/mockData';
+// Import mock data generator (this would be replaced with Firebase in production)
+import { generateMockGreenhouseData } from '@/data/mockData';
 
 export function useGreenhouseData() {
   const [greenhouses, setGreenhouses] = useState<Record<number, Greenhouse>>({});
@@ -15,7 +15,7 @@ export function useGreenhouseData() {
   useEffect(() => {
     try {
       // In a real implementation, this would fetch from Firebase
-      const data = mockGreenhouseData;
+      const data = generateMockGreenhouseData();
       setGreenhouses(data);
       setLoading(false);
     } catch (err) {
