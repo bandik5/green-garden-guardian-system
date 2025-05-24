@@ -1,4 +1,3 @@
-
 /*
  * ESP32 Hub Firmware for Greenhouse Automation System
  * 
@@ -782,7 +781,7 @@ void syncWithFirebase() {
       String path = "/greenhouses/" + String(i) + "/currentData";
       
       // Update the data using correct API
-      if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+      if (Firebase.setJSON(fbdo, path.c_str(), json)) {
         Serial.println("Uploaded data for greenhouse " + String(i));
       } else {
         Serial.println("Failed to upload: " + fbdo.errorReason());
@@ -815,7 +814,7 @@ void syncWithFirebase() {
       path = "/greenhouses/" + String(i) + "/settings";
       
       // Update settings
-      Firebase.RTDB.setJSON(&fbdo, path.c_str(), &settingsJson);
+      Firebase.setJSON(fbdo, path.c_str(), settingsJson);
     }
   }
   
@@ -823,7 +822,7 @@ void syncWithFirebase() {
   for (int i = 1; i <= MAX_GREENHOUSES; i++) {
     String path = "/greenhouses/" + String(i) + "/settings";
     
-    if (Firebase.RTDB.getJSON(&fbdo, path.c_str())) {
+    if (Firebase.getJSON(fbdo, path.c_str())) {
       if (fbdo.dataType() == "json") {
         FirebaseJson &json = fbdo.jsonObject();
         FirebaseJsonData result;
@@ -876,7 +875,7 @@ void syncWithFirebase() {
             // Clear the command in Firebase
             FirebaseJson clearJson;
             clearJson.set("manualControl", (const char*)NULL);
-            Firebase.RTDB.updateNode(&fbdo, path.c_str(), &clearJson);
+            Firebase.updateNode(fbdo, path.c_str(), clearJson);
           }
         }
         
@@ -955,7 +954,7 @@ void sendControlToAllNodes(char command) {
     FirebaseJson json;
     json.set("action", String(command == 'O' ? "open" : "close"));
     json.set("timestamp", (uint32_t)millis());
-    Firebase.RTDB.setJSON(&fbdo, "/system/lastControlAll", &json);
+    Firebase.setJSON(fbdo, "/system/lastControlAll", json);
   }
 }
 
