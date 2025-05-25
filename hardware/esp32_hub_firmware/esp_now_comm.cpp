@@ -88,7 +88,7 @@ void sendControlToAllNodes(char command) {
     FirebaseJson json;
     json.set("action", String(command == 'O' ? "open" : "close"));
     json.set("timestamp", (uint32_t)millis());
-    Firebase.setJSON(fbdo, "/system/lastControlAll", json);
+    Firebase.RTDB.setJSON(&fbdo, "/system/lastControlAll", &json);
   }
 }
 
