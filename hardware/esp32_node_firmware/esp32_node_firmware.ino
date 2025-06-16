@@ -106,7 +106,7 @@ void executeMotorControl(char command);
 void stopMotor();
 void saveSettingsToEEPROM();
 void loadSettingsFromEEPROM();
-void onDataReceived(const uint8_t *mac, const uint8_t *data, int len);
+void onDataReceived(const esp_now_recv_info *recv_info, const uint8_t *data, int len);
 void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void feedWatchdog();
 void blinkStatusLED(int count);
@@ -119,8 +119,13 @@ void setup() {
   Serial.print("Node ID: ");
   Serial.println(NODE_ID);
   
-  // Initialize watchdog timer
-  esp_task_wdt_init(WDT_TIMEOUT, true);
+  // Initialize watchdog timer with new API
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
   
   // Initialize GPIO pins
@@ -291,7 +296,7 @@ void sendDataToHub() {
   }
 }
 
-void onDataReceived(const uint8_t *mac, const uint8_t *data, int len) {
+void onDataReceived(const esp_now_recv_info *recv_info, const uint8_t *data, int len) {
   if (len == sizeof(ControlMessage)) {
     ControlMessage* msg = (ControlMessage*)data;
     
